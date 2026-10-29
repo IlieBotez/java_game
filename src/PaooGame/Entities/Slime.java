@@ -1,0 +1,232 @@
+package PaooGame.Entities;
+
+import PaooGame.Game;
+import PaooGame.Graphics.Animation;
+import java.awt.*;
+import java.util.Random;
+
+public abstract class Slime extends Enemy {
+    protected Random random;
+    protected int dirX = 0, dirY = 0;
+
+    protected boolean hasDealtDamage = false;
+    protected long attackCooldown = 1200;
+    protected long lastAttackTimer = 0;
+
+    protected float patrolSpeed;
+    protected float chaseSpeed;
+
+    public Slime(Game game, float x, float y, int health, int damage) {
+        super(game, x, y, 64, 64, health, damage);
+        this.random = new Random();
+        this.patrolSpeed = 0.4f;
+        this.chaseSpeed = 0.8f;
+    }
+
+    protected void loadAnimations(java.awt.image.BufferedImage[][] walk,
+                                  java.awt.image.BufferedImage[][] run,
+                                  java.awt.image.BufferedImage[][] idle,
+                                  java.awt.image.BufferedImage[][] attack,
+                                  java.awt.image.BufferedImage[][] hurt,
+                                  java.awt.image.BufferedImage[][] die) {
+
+        String[] dirs = {"DOWN", "UP", "LEFT", "RIGHT"};
+
+        for (int i = 0; i < 4; i++) {
+            animations.put("WALK_" + dirs[i], new Animation(120, walk[i]));
+            animations.put("RUN_" + dirs[i], new Animation(100, run[i]));
+            animations.put("IDLE_" + dirs[i], new Animation(200, idle[i]));
+            animations.put("ATTACK_" + dirs[i], new Animation(90, attack[i]));
+            animations.put("HURT_" + dirs[i], new Animation(120, hurt[i]));
+            animations.put("DIE_" + dirs[i], new Animation(100, die[i]));
+        }
+    }
+
+    @Override
+    public void Update() {
+        if (isDead) { handleDeath(); return; }
+        if (isHurt) { handleHurt(); return; }
+
+        Player target = game.getEntityManager().getPlayer();
+        float distance = getDistanceTo(target);
+
+        decideBehavior(target, distance);
+
+        if (!isAttacking) {
+            applyMovement();
+        }
+
+        updateAnimationKey(distance);
+        if (animations.containsKey(currentKey)) {
+            animations.get(currentKey).Update();
+        }
+    }
+
+    protected void handleDeath() {
+        currentKey = "DIE_" + lastDirection;
+        if (!animations.get(currentKey).IsFinished()) {
+            animations.get(currentKey).Update();
+        }
+    }
+
+    private void handleHurt() {
+        currentKey = "HURT_" + lastDirection;
+        if (animations.get(currentKey).IsFinished()) {
+            isHurt = false;
+        }
+        animations.get(currentKey).Update();
+    }
+
+    private void decideBehavior(Player p, float distance) {
+        float stoppingDistance = 30.0f;
+
+        if (distance <= stoppingDistance) {
+            executeAttack(p);
+        } else if (distance < 300) {
+            executeChase(p, distance);
+        } else {
+            executePatrol();
+        }
+    }
+
+    private void executeAttack(Player p) {
+        dirX = 0; dirY = 0;
+
+        if (!isAttacking && System.currentTimeMillis() - lastAttackTimer > attackCooldown) {
+            isAttacking = true;
+            hasDealtDamage = false;
+            lastAttackTimer = System.currentTimeMillis();
+            animations.get("ATTACK_" + lastDirection).Reset();
+        }
+    }
+
+    private void executeChase(Player p, float distance) {
+        isAttacking = false;
+        this.speed = chaseSpeed;
+
+        if (distance > 50) {
+            lastAttackTimer = System.currentTimeMillis() - (attackCooldown - 500);
+        }
+
+        float diffX = p.getX() - x;
+        float diffY = p.getY() - y;
+        followPlayer(diffX, diffY);
+    }
+
+    private void executePatrol() {
+        isAttacking = false;
+        this.speed = patrolSpeed;
+        lastAttackTimer = System.currentTimeMillis();
+
+        if (System.currentTimeMillis() - lastAIUpdate > aiInterval) {
+            chooseNewDirection();
+            lastAIUpdate = System.currentTimeMillis();
+        }
+    }
+
+    private void applyMovement() {
+        if (canMoveWithoutStacking(dirX, dirY)) { move(dirX, dirY); return; }
+        if (dirX != 0 && canMoveWithoutStacking(dirX, 0)) { move(dirX, 0); return; }
+        if (dirY != 0 && canMoveWithoutStacking(0, dirY)) { move(0, dirY); return; }
+
+        if (dirX != 0 && dirY == 0) {
+            if (canMoveWithoutStacking(0, 1)) { move(0, 1); return; }
+            if (canMoveWithoutStacking(0, -1)) { move(0, -1); return; }
+        } else if (dirY != 0 && dirX == 0) {
+            if (canMoveWithoutStacking(1, 0)) { move(1, 0); return; }
+            if (canMoveWithoutStacking(-1, 0)) { move(-1, 0); return; }
+        }
+        dirX = 0; dirY = 0;
+    }
+
+    private void updateAnimationKey(float distance) {
+        if (isAttacking) {
+            currentKey = "ATTACK_" + lastDirection;
+            checkAttacks(game.getEntityManager().getPlayer());
+
+            if (animations.get(currentKey).IsFinished()) {
+                isAttacking = false;
+            }
+        } else {
+            String moveType = (distance < 300) ? "RUN_" : "WALK_";
+            currentKey = (dirX != 0 || dirY != 0) ? moveType + lastDirection : "IDLE_" + lastDirection;
+        }
+    }
+
+    private void checkAttacks(Player p) {
+        if (hasDealtDamage) return;
+
+        Animation anim = animations.get(currentKey);
+        int frame = anim.getCurrentFrameIndex();
+
+        if (frame == 3) {
+            Rectangle body = getCollisionBounds(0, 0);
+            int range = 20;
+
+            switch (lastDirection) {
+                case "UP"       : attackRect.setBounds(body.x, body.y - range, body.width, range); break;
+                case "DOWN"     : attackRect.setBounds(body.x, body.y + body.height, body.width, range); break;
+                case "LEFT"     : attackRect.setBounds(body.x - range, body.y, range, body.height); break;
+                case "RIGHT"    : attackRect.setBounds(body.x + body.width, body.y, range, body.height); break;
+            }
+
+            if (attackRect.intersects(p.getCollisionBounds(0, 0))) {
+                applyAttackEffect(p);
+                hasDealtDamage = true;
+            }
+        }
+    }
+
+    private void followPlayer(float diffX, float diffY) {
+        dirX = (Math.abs(diffX) > 2) ? ((diffX > 0) ? 1 : -1) : 0;
+        dirY = (Math.abs(diffY) > 2) ? ((diffY > 0) ? 1 : -1) : 0;
+
+        float absX = Math.abs(diffX);
+        float absY = Math.abs(diffY);
+
+        if (absX > absY + 15) {
+            lastDirection = (dirX > 0) ? "RIGHT" : "LEFT";
+        } else if (absY > absX + 15) {
+            lastDirection = (dirY > 0) ? "DOWN" : "UP";
+        }
+    }
+
+    private boolean canMoveWithoutStacking(int testDirX, int testDirY) {
+        if (testDirX == 0 && testDirY == 0) return true;
+
+        Rectangle nextBounds = getCollisionBounds(testDirX * speed, testDirY * speed);
+
+        for (Enemy e : game.getEntityManager().getEnemies()) {
+            if (e == this || e.isDead()) continue;
+            if (nextBounds.intersects(e.getCollisionBounds(0, 0))) return false;
+        }
+        return true;
+    }
+
+    private void chooseNewDirection() {
+        int chance = random.nextInt(5);
+        dirX = 0; dirY = 0;
+
+        switch (chance) {
+            case 0: dirY = -1; lastDirection = "UP"; break;
+            case 1: dirY = 1;  lastDirection = "DOWN"; break;
+            case 2: dirX = -1; lastDirection = "LEFT"; break;
+            case 3: dirX = 1;  lastDirection = "RIGHT"; break;
+        }
+    }
+
+    private float getDistanceTo(Entity target) {
+        float diffX = target.getX() - x;
+        float diffY = target.getY() - y;
+        return (float) Math.sqrt(diffX * diffX + diffY * diffY);
+    }
+
+    private void move(int moveX, int moveY) {
+        if (moveX != 0 && canMove(x + moveX * speed, y)) x += moveX * speed;
+        if (moveY != 0 && canMove(x, y + moveY * speed)) y += moveY * speed;
+    }
+
+    protected void applyAttackEffect(Player p) {
+        p.TakeDamage(this.attackDamage);
+    }
+}
